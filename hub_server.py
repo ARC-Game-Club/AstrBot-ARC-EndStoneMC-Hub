@@ -58,6 +58,93 @@ def strip_minecraft_format_codes(text: str) -> str:
     return _mc_format_code_pattern.sub("", text)
 
 
+def format_merged_server_info(payloads: list[dict[str, Any]]) -> str:
+    """Merge per-server info payloads, deduplicating hardware by host_id.
+
+    Args:
+        payloads: Successful ``server_info`` results from QQ Sync.
+
+    Returns:
+        Single QQ-facing text with one hardware block per physical host.
+    """
+    if not payloads:
+        return "ℹ️ 未能获取任何服务器信息。"
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for item in payloads:
+        system = item.get("system") if isinstance(item.get("system"), dict) else {}
+        host_id = str(system.get("host_id") or "").strip() or f"solo:{item.get('server_name')}"
+        groups.setdefault(host_id, []).append(item)
+
+    lines: list[str] = ["ℹ️ 服务器信息"]
+    for host_id, members in groups.items():
+        system = members[0].get("system") if isinstance(members[0].get("system"), dict) else {}
+        names = [str(m.get("server_name") or "?") for m in members]
+        hostname = str(system.get("hostname") or host_id)
+        lines.append("")
+        lines.append(f"🖥️ 物理机 {hostname}（{'、'.join(names)}）")
+        lines.append(f"• 操作系统: {system.get('os') or '?'}")
+
+        cpu = system.get("cpu") if isinstance(system.get("cpu"), dict) else {}
+        model = str(cpu.get("model") or "未知")
+        if len(model) > 50:
+            model = model[:50] + "..."
+        lines.append(f"• CPU型号: {model}")
+        if cpu.get("max_freq_ghz"):
+            freq = f"• CPU主频: {float(cpu['max_freq_ghz']):.2f}GHz"
+            if cpu.get("current_freq_ghz"):
+                freq += f" (当前: {float(cpu['current_freq_ghz']):.2f}GHz)"
+            lines.append(freq)
+        lines.append(
+            f"• CPU核心: {cpu.get('physical_cores') or '?'}核"
+            f"{cpu.get('logical_cores') or '?'}线程"
+        )
+        lines.append(f"• CPU使用率: {float(cpu.get('usage_percent') or 0):.1f}%")
+
+        mem = system.get("memory") if isinstance(system.get("memory"), dict) else {}
+        lines.append(
+            f"• 内存: {float(mem.get('used_gb') or 0):.1f}GB / "
+            f"{float(mem.get('total_gb') or 0):.1f}GB "
+            f"({float(mem.get('percent') or 0):.1f}%)"
+        )
+
+        gpus = system.get("gpus") if isinstance(system.get("gpus"), list) else []
+        if gpus:
+            for idx, gpu in enumerate(gpus, start=1):
+                if not isinstance(gpu, dict):
+                    continue
+                label = f"GPU{idx}" if len(gpus) > 1 else "GPU"
+                name = str(gpu.get("name") or "未知")
+                mem_mb = gpu.get("memory_mb")
+                if mem_mb is not None:
+                    lines.append(f"• {label}: {name} ({float(mem_mb):.0f}MB)")
+                else:
+                    lines.append(f"• {label}: {name}")
+        else:
+            lines.append("• GPU: 未检测到")
+
+        for disk in system.get("disks") or []:
+            if not isinstance(disk, dict) or "error" in disk:
+                continue
+            lines.append(
+                f"• 硬盘({disk.get('device')}): "
+                f"{float(disk.get('used_gb') or 0):.1f}GB / "
+                f"{float(disk.get('total_gb') or 0):.1f}GB "
+                f"({float(disk.get('percent') or 0):.1f}%)"
+            )
+
+        for m in members:
+            lines.append(
+                f"• [{m.get('server_name') or '?'}] "
+                f"MC {m.get('minecraft_version') or '?'} / "
+                f"Endstone {m.get('endstone_version') or '?'} / "
+                f"在线 {m.get('online_players', 0)}/{m.get('max_players', '?')} / "
+                f"运行 {m.get('uptime_str') or '?'}"
+            )
+
+    return "\n".join(lines)
+
+
 def strip_mc_command_prefix(raw_message: str) -> str | None:
     """Strip required /mc prefix into internal /command form.
 
@@ -1162,7 +1249,7 @@ class ArcHubServer:
                 "/mc deladmin @对方 — 超级管理员移除管理员",
                 "/mc list [编号] — 在线玩家",
                 "/mc tps [编号] — TPS / MSPT",
-                "/mc info [编号] — 服务器信息",
+                "/mc info [编号] — 服务器信息（CPU/内存/GPU，同物理机合并）",
                 "/mc 绑定 <玩家名> — 绑定 QQ 到游戏角色",
                 "/mc 重启 — 重启投票（须在线）",
                 "/mc cmd [编号] <控制台命令> — 群管理可用",
@@ -1293,6 +1380,12 @@ class ArcHubServer:
             )
             return
 
+        info_head = eff_line.strip().split(None, 1)[0].lstrip("/").lower()
+        if info_head == "info":
+            text = await self.collect_and_format_server_info(route_sid=route_sid)
+            await self.reply_qq(reply_target, f"[{self.hub_server_name}]\n{text}")
+            return
+
         uid = str(user_id or "").strip()
         is_admin = uid in self.hub_admins or (
             bool(uid) and any(item.lower() == uid.lower() for item in self.hub_admins)
@@ -1310,6 +1403,139 @@ class ArcHubServer:
                 "is_config_admin": is_admin,
             }
         )
+
+    def resolve_info_server_names(
+        self,
+        *,
+        route_sid: int | None = None,
+        server_hint: str = "",
+        aliases: dict[str, str] | None = None,
+    ) -> tuple[list[str], str]:
+        """Resolve QQ Sync game servers for ``/mc info`` / ``mc_server_info``.
+
+        Args:
+            route_sid: Optional catalog numeric id from ``/mc info <id>``.
+            server_hint: Optional name, id, or alias string.
+            aliases: Lowercase alias map from plugin config.
+
+        Returns:
+            ``(server_names, error)``. Exactly one side is non-empty.
+        """
+        connected = self.connected_server_names()
+        if not connected:
+            return [], "当前没有已连接的 Minecraft 子服。"
+
+        if route_sid is not None:
+            for item in self.get_server_catalog():
+                if int(item["id"]) == int(route_sid):
+                    name = str(item["name"])
+                    if name in self.connected_servers:
+                        return [name], ""
+                    return [], f"服务器 [{name}] 的群服互通未连接"
+            return [], f"无编号 {route_sid} 的服务器。"
+
+        hint = str(server_hint or "").strip()
+        if not hint:
+            return connected, ""
+
+        alias_map = aliases or {}
+        mapped = alias_map.get(hint.lower())
+        if mapped:
+            hint = mapped
+
+        try:
+            sid = int(hint)
+        except ValueError:
+            sid = None
+        if sid is not None:
+            for item in self.get_server_catalog():
+                if int(item["id"]) == sid:
+                    name = str(item["name"])
+                    if name in self.connected_servers:
+                        return [name], ""
+                    return [], f"服务器 [{name}] 的群服互通未连接"
+            return [], f"无编号 {sid} 的服务器。"
+
+        lowered = hint.lower()
+        exact = [name for name in connected if name.lower() == lowered]
+        if len(exact) == 1:
+            return exact, ""
+        partial = [name for name in connected if lowered in name.lower()]
+        if len(partial) == 1:
+            return partial, ""
+        if len(partial) > 1:
+            return [], "server 匹配到多台服，请改用更完整的名称或编号：\n" + "\n".join(
+                partial
+            )
+        return [], f"未找到服务器「{hint}」。已连接：\n" + "\n".join(connected)
+
+    async def collect_and_format_server_info(
+        self,
+        *,
+        route_sid: int | None = None,
+        server_names: list[str] | None = None,
+        timeout: float = 12,
+    ) -> str:
+        """Fetch ``server_info`` from QQ Sync and merge by physical host.
+
+        Args:
+            route_sid: Optional catalog id filter.
+            server_names: Explicit target names; overrides route_sid when set.
+            timeout: Per-server core_rpc timeout seconds.
+
+        Returns:
+            Merged QQ-facing text.
+        """
+        if server_names is not None:
+            targets = [str(n).strip() for n in server_names if str(n).strip()]
+        else:
+            targets, error = self.resolve_info_server_names(route_sid=route_sid)
+            if error:
+                return error
+
+        if not targets:
+            return "当前没有可查询的 Minecraft 子服。"
+
+        async def _one(name: str) -> tuple[str, dict[str, Any] | None, str]:
+            try:
+                resp = await self.call_core_rpc(
+                    name, "server_info", {}, timeout=timeout
+                )
+            except Exception as exc:
+                return name, None, str(exc)
+            if not isinstance(resp, dict) or not resp.get("ok"):
+                return name, None, str(
+                    (resp or {}).get("error") if isinstance(resp, dict) else "返回异常"
+                )
+            result = resp.get("result")
+            if not isinstance(result, dict) or not result.get("ok"):
+                return name, None, str(
+                    (result or {}).get("error")
+                    if isinstance(result, dict)
+                    else "无有效数据"
+                )
+            return name, result, ""
+
+        rows = await asyncio.gather(*[_one(name) for name in targets])
+        payloads: list[dict[str, Any]] = []
+        errors: list[str] = []
+        for name, payload, err in rows:
+            if payload is not None:
+                payloads.append(payload)
+            else:
+                errors.append(f"[{name}] {err}")
+
+        if not payloads:
+            detail = "\n".join(errors) if errors else "（无返回）"
+            return (
+                "未能获取服务器信息（需 QQ Sync ≥ 1.0.6 的 server_info）。\n"
+                + detail
+            )
+
+        text = format_merged_server_info(payloads)
+        if errors:
+            text += "\n\n部分子服失败：\n" + "\n".join(errors)
+        return text
 
     async def _handle_qq_bind(
         self,

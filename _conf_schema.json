@@ -26,19 +26,19 @@
   "platform_id": {
     "description": "QQ 平台 ID",
     "type": "string",
-    "hint": "AstrBot 消息平台实例 ID（aiocqhttp 适配器 id）。留空则从首条群消息自动学习",
+    "hint": "AstrBot 消息平台实例 ID。留空或填 default 则从首条群消息自动学习，不要写死个人平台名",
     "default": "default"
   },
   "target_groups": {
-    "description": "同步的 QQ 群号列表",
+    "description": "群白名单（群号 / 官方 group_openid）",
     "type": "list",
-    "hint": "仅这些群的消息会转发到 MC，MC 消息也会发到这些群",
-    "default": ["1138387946"]
+    "hint": "仅白名单内的群可 /mc 互动、转发群聊到 MC，以及接收 MC→QQ 广播。NapCat 填数字群号；QQ 官方机器人填 group_openid（如 788A1D2C...）。留空表示不限制（兼容旧行为）",
+    "default": []
   },
   "group_names": {
     "description": "群号到显示名映射",
     "type": "object",
-    "hint": "例如 {\"712523104\": \"主群\"}，用于游戏内显示",
+    "hint": "例如 {\"788A1D2C...\": \"弧光游戏俱乐部\"}，用于游戏内显示",
     "items": {
       "group_id": {
         "description": "群显示名",
@@ -57,7 +57,7 @@
   "super_admins": {
     "description": "超级管理员账号 ID",
     "type": "list",
-    "hint": "可任免管理员。首次启动写入 admins.json；/mc addadmin / deladmin 会同步回此处。留空时会把 admins 视为初始超级管理员",
+    "hint": "可任免管理员。非空时重载会覆盖 admins.json 中的超级管理员（可删旧号）。留空则保留已有超级管理员；若仍为空会把 admins 视为初始超级管理员",
     "default": []
   },
   "sync_group_card": {

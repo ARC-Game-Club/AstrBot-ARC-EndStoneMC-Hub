@@ -75,8 +75,19 @@ class ActivationStore:
         key = str(session_key or "").strip()
         if not key:
             return False
-        existed = key in self._sessions
         sid = str(session_id or "").strip()
+        # Drop stale activations for the same group/session under an old platform id.
+        if sid:
+            stale_keys = [
+                old_key
+                for old_key, meta in list(self._sessions.items())
+                if old_key != key
+                and isinstance(meta, dict)
+                and str(meta.get("session_id") or "").strip() == sid
+            ]
+            for old_key in stale_keys:
+                self._sessions.pop(old_key, None)
+        existed = key in self._sessions
         self._sessions[key] = {
             "session_id": sid,
             "label": str(label or sid or key).strip(),
@@ -87,6 +98,71 @@ class ActivationStore:
             self._session_id_index[sid] = key
         self.save()
         return not existed
+
+    def deactivate(self, session_key: str) -> bool:
+        """Remove one activated session.
+
+        Args:
+            session_key: ``unified_msg_origin`` to drop.
+
+        Returns:
+            True if a session was removed.
+        """
+        key = str(session_key or "").strip()
+        if not key or key not in self._sessions:
+            return False
+        self._sessions.pop(key, None)
+        self._rebuild_index()
+        self.save()
+        return True
+
+    def migrate_single_platform_session(
+        self,
+        platform_id: str,
+        new_session_key: str,
+        *,
+        session_id: str = "",
+        label: str = "",
+    ) -> str | None:
+        """If this platform has exactly one activated session, move it to ``new_session_key``.
+
+        Used when QQ Official group openid changes after re-adding the bot.
+
+        Args:
+            platform_id: AstrBot platform instance id.
+            new_session_key: Current ``unified_msg_origin``.
+            session_id: Current group / session id.
+            label: Optional display label.
+
+        Returns:
+            Old session key when migrated, otherwise None.
+        """
+        pid = str(platform_id or "").strip()
+        new_key = str(new_session_key or "").strip()
+        if not pid or not new_key:
+            return None
+        if new_key in self._sessions:
+            return None
+        prefix = f"{pid}:"
+        same = [
+            key
+            for key in self._sessions
+            if key == pid or key.startswith(prefix)
+        ]
+        if len(same) != 1:
+            return None
+        old_key = same[0]
+        old_meta = self._sessions.pop(old_key, {}) or {}
+        sid = str(session_id or old_meta.get("session_id") or "").strip()
+        self._sessions[new_key] = {
+            "session_id": sid,
+            "label": str(label or sid or new_key).strip(),
+            "activated_at": int(time.time()),
+            "activated_by": str(old_meta.get("activated_by") or "auto-migrate"),
+        }
+        self._rebuild_index()
+        self.save()
+        return old_key
 
     def is_activated(self, session_key: str) -> bool:
         key = str(session_key or "").strip()

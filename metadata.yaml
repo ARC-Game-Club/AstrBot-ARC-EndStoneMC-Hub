@@ -2,13 +2,15 @@ name: astrbot_plugin_endstone_arc
 display_name: 弧光EndStone消息中枢
 desc: 弧光 EndStone 群服消息中枢。在 AstrBot 上开启 WebSocket 中枢，对接 EndstoneMC-ARC-QQ-Sync-Plugin 与 EndstoneMC-ARC-AI-Helper；双向转发 QQ/MC 消息与跨服事件，并提供 MC AI 对话 RPC。
 help: |
-  1. 在插件配置中填写监听端口、连接 Token、目标 QQ 群。
+  1. 在插件配置中填写监听端口、连接 Token、群白名单 target_groups（QQ 官方填 group_openid）。
   2. MC 子服插件将 hub_host/hub_port 指向本机 AstrBot（默认 19136）。
   3. 群内使用 /mc help、/mc list、/mc cmd …；中枢剥前缀后再转发给 QQ Sync。
-  4. 确保 AstrBot 已接入 QQ 平台（如 aiocqhttp / NapCat）。
-  5. 若使用 EndstoneMC-ARC-AI-Helper，将其 hub_host/port 指向本中枢；人格与记忆由 AstrBot 维护。外部对话需管理员发 /mc activate 激活后再调 MC 工具；MC 事件广播到所有已激活会话，/mc 指令回复只回来源会话。超级管理员可用 /mc addadmin / deladmin 任免管理员。
-version: 1.7.9
+  4. 确保 AstrBot 已接入 QQ 平台（如 aiocqhttp / NapCat / qq_official）。
+  5. 若使用 EndstoneMC-ARC-AI-Helper，将其 hub_host/port 指向本中枢；人格与记忆由 AstrBot 维护。外部对话需管理员发 /mc activate 激活后再调 MC 工具；MC 事件广播到白名单群（有 UMO 的），/mc 指令回复只回来源会话。超级管理员可用 /mc addadmin / deladmin 任免管理员。
+version: 1.7.12
 author: DEVILENMO
 support_platforms:
   - aiocqhttp
+  - qq_official
+  - qq_official_webhook
 astrbot_version: ">=4.0.0"

@@ -74,15 +74,25 @@ class AdminStore:
         return changed
 
     def seed_super_admins(self, user_ids: set[str]) -> bool:
+        """Replace persistent super admins with the non-empty config list.
+
+        Args:
+            user_ids: Super-admin ids from plugin config.
+
+        Returns:
+            True when the on-disk store was updated.
+        """
         normalized = {str(item).strip() for item in user_ids if str(item).strip()}
-        changed = False
-        if normalized - self._super_admins:
-            self._super_admins.update(normalized)
-            self._admins.update(normalized)
-            changed = True
-        if changed:
-            self.save()
-        return changed
+        if not normalized:
+            return False
+        if self._super_admins == normalized and normalized <= self._admins:
+            return False
+        removed = self._super_admins - normalized
+        self._super_admins = set(normalized)
+        self._admins.update(normalized)
+        self._admins.difference_update(removed)
+        self.save()
+        return True
 
     def list_admins(self) -> list[str]:
         return sorted(self._admins)

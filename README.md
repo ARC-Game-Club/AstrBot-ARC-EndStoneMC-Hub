@@ -51,7 +51,7 @@ AstrBot/data/plugins/astrbot_plugin_endstone_arc/
 |----|------|
 | `ws_port` | 与 MC `hub_port` / FRP 一致，默认 19136 |
 | `auth_token` | 与 MC `hub_token` 一致 |
-| `target_groups` | 同步的 QQ 群 |
+| `target_groups` | **群白名单**：仅这些群可 `/mc` 互动、转发聊天、接收 MC 广播。QQ 官方填 `group_openid`；NapCat 填数字群号。留空=不限制 |
 | `admins` | 管理员 ID；首次启动写入 `admins.json`，之后 `/mc addadmin` 会同步回此项 |
 | `super_admins` | 超级管理员 ID；可用 `/mc addadmin` / `/mc deladmin` 任免管理员 |
 | `sync_group_card` | 绑定后是否改群名片 |
@@ -74,7 +74,7 @@ AI Helper 使用独立连接：`register.role = "ai_helper"`，不会占用子�
 | `mc_list_servers` | 已激活即可 | （无） | | | 列出已连接 Helper 服 |
 | `mc_list_players` | 已激活即可 | `server` | 多开服时要填 | 空 | 目标服名称 / 编号 / 别名 |
 | `mc_get_tps` | 已激活即可 | `server` | 多开服时要填 | 空 | 目标服名称 / 编号 / 别名 |
-| `mc_server_info` | 已激活即可 | `server` | 多开服时要填 | 空 | 目标服名称 / 编号 / 别名 |
+| `mc_server_info` | 已激活即可 | `server` | 可留空查全部 | 空 | 目标服名称 / 编号 / 别名；含硬件且同物理机合并 |
 | `mc_run_command` | 管理员；或已绑定用户仅限本人自救 | `command` | 是 | | 不含 `/` 的游戏指令。例：`effect Steve night_vision 30 0 true`；劈闪电：`execute at Steve run summon lightning_bolt ~ ~ ~`。权限受 AI Helper 三档限制；禁止 `stop` / `kill`（代理服主除外） |
 | | | `server` | 多开服时要填 | 空 | 目标服名称 / 编号 / 别名 |
 | `mc_landmarks` | 已激活即可（只读） | `server` | 多开服时要填 | 空 | 公开地标：出生点 / Warp / 公共领地 |
@@ -128,7 +128,7 @@ AI Helper 使用独立连接：`register.role = "ai_helper"`，不会占用子�
 | | | `qq` | bind 时可选 | | 平台用户 ID：传统 QQ（5～11 位数字）或 QQ 官方 `member_openid`；已 @对方时可留空自动解析；**不要填群名片** |
 | | | `force` | bind 时可选 | | `true` 强制改绑（先解旧绑） |
 
-权限补充：QQ 群里「管理员」= 插件管理员 / 超级管理员，或能识别出的群主 / 群管。超级管理员映射为 AI Helper **代理服主**，普通管理员映射为 **管理员**，已绑定自救用户映射为 **助手**。`mc_run_command` 对已绑定用户开放 tp / effect / spawnpoint 等自救，且只能打在本人绑定角色上；未绑定用户不能改世界。**已绑定用户**可调用 `mc_economy`（`sub_action=query`）查本人余额；查他人或 change 仍仅管理员。**`mc_qq_binding`** 在中枢本地处理（不经 AI Helper）；游戏内需 OP/管理员权限。游戏内对话会透传 AI Helper 发来的 `permission_level`。
+权限补充：QQ 群里「管理员」= 插件管理员 / 超级管理员，或能识别出的群主 / 群管（**以后端校验为准，不是 QQ 群名片**）。超级管理员映射为 AI Helper **代理服主**，普通管理员映射为 **管理员**，已绑定自救用户映射为 **助手**。外部已激活会话会在系统提示里写明当前消息发起者的 Minecraft 权限档位；模型应直接调 `mc_*` 工具，不要先查群身份。`mc_run_command` 对已绑定用户开放 tp / effect / spawnpoint 等自救，且只能打在本人绑定角色上；未绑定用户不能改世界。**已绑定用户**可调用 `mc_economy`（`sub_action=query`）查本人余额；查他人或 change 仍仅管理员。**`mc_qq_binding`** 在中枢本地处理（不经 AI Helper）；游戏内需 OP/管理员权限。游戏内对话会透传 AI Helper 发来的 `permission_level`。
 
 ## 启停与连接提示
 
@@ -142,6 +142,8 @@ AI Helper 的 `ai_helper` 连接**不走**上述开停服播报。
 
 ## 更新日志
 
+- **1.7.12**：`/mc info` / `mc_server_info` 由中枢经 QQ Sync `server_info` 拉取硬件信息（CPU/内存/GPU），并按物理机指纹合并去重。需 QQ Sync ≥ 1.0.6。
+- **1.7.10**：修复 QQ 侧插件管理员被大模型当成「非群管」而不敢调管理工具：系统提示改为声明权限由工具按消息发起者 ID 自动校验，并注入当前发起者的 Minecraft 权限档位；禁止先查群身份再决定是否调用。
 - **1.7.9**：新增只读工具 `mc_player_ip`（在线玩家连接原始 IP），供模型传给下游地理/天气工具。需 AI Helper ≥ 2.1.9。
 - **1.7.8**：新增只读工具 `mc_stock_leaderboard` / `mc_stock_quote`，对接主服 UpsAndDowns 模拟美股排行与行情。需 AI Helper ≥ 2.1.7、UpsAndDowns ≥ 0.5.2。
 - **1.7.7**：MC AI 对话身份标签按请求者真实身份展示（普通玩家不再被标成「助手/管理员」误导模型）；配合 AI Helper 2.1.6 权限上限/身份分离。
@@ -151,6 +153,7 @@ AI Helper 的 `ai_helper` 连接**不走**上述开停服播报。
 - **1.7.3**：绑定曾误走 AI Helper `player_basic_info`；已由 1.7.4 纠正为群服互通路线。
 - **1.7.2**：`/mc 绑定` 用弧光核心玩家解析接口确认角色（跨服共通账号，不再只查中枢 `data.json`）；`mc_economy` 支持已绑定用户 `transfer` 从自己账户发红包。需 AI Helper ≥ 2.1.4。
 - **1.7.1**：`mc_economy` 查询本人余额不再要求管理员；QQ 已绑定用户可查自己，查他人或 change 仍仅管理员。需 AI Helper ≥ 2.1.3。
+- **1.7.11**：强化 `target_groups` 群白名单：仅白名单群可互动/转发；MC→QQ 广播优先发往白名单群。QQ 官方请填当前 `group_openid`（换机器人或重进群后 openid 可能变化）。
 - **1.7.0**：对齐 AI Helper ≥ 2.1.1：新增 `mc_landmarks` / `mc_economy` / `mc_land` / `mc_arc_tp`；工具调用回传三档 `permission_level`；系统提示补充弧光核心能力说明。
 - **1.6.14**：工具参数整理：查询类去掉无用的 `reason`；入狱时长改为 `minutes`（与天眼同一单位）；`reason` 仅保留为监狱入狱原因。
 - **1.6.13**：天眼查询不再要求指定服务器或玩家在线：`server` 留空（或指定服查不到）时会搜索全部已连接服务器。回溯时长由大模型按用户说法写入 `minutes`（一天=1440）。

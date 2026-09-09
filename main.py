@@ -71,10 +71,14 @@ _MC_AI_IDENTITY_HINT = (
 _QQ_MC_TOOL_HINT = (
     "当前对话已通过 /mc activate 接入弧光 Minecraft 中枢。"
     "查询在线、TPS、服务器信息或执行游戏指令时必须调用对应工具，禁止编造。"
+    "权限由工具根据本条消息发起者 ID 自动校验（插件管理员/超级管理员、或群主/群管、"
+    "或已绑定自救）；禁止先调用群身份/群成员查询工具判断是否管理员，也禁止向用户索要权限证明。"
+    "下面会写明「当前消息发起者」的 Minecraft 工具权限档位；有管理员档位时直接调用管理类工具即可。"
+    "无权限时工具会返回错误，不要自行推断「不是群管就不能用」。"
     "问路标/出生点/公共传送点/公共领地用 mc_landmarks（只读，已激活即可）。"
     "已绑定游戏角色的用户可调用 mc_economy（sub_action=query）查询本人余额；"
     "也可 transfer 从自己账户发红包/转账（amount 每人；targets 或 to_online=true）；"
-    "查询他人或 change 加减钱仅管理员。"
+    "查询他人或 change 加减钱需管理员档位（工具自动拦）。"
     "领地用 mc_land，传送 Home/Warp/坐标用 mc_arc_tp；"
     "不要用 mc_run_command 代替这些弧光核心工具。"
     "关押玩家用 mc_jail_player，释放用 mc_release_player，查看在押用 mc_list_prisoners。"
@@ -87,13 +91,10 @@ _QQ_MC_TOOL_HINT = (
     "改世界/查在线等其它工具在多开服时仍须填写 server。"
     "有多台 Minecraft 服务器时，除天眼外先调用 mc_list_servers，再填写 server"
     "（名称、编号或别名），不要猜测。"
-    "在能识别出 QQ 群主/群管身份的群聊里，mc_run_command / 入狱 / 天眼 / 改银行 / 查他人余额 / 领地 / 弧光传送"
-    "仅管理员可真正执行；mc_landmarks / mc_stock_leaderboard / mc_stock_quote / "
-    "mc_player_ip / mc_ip_locate 只读例外；"
-    "已绑定用户可查自己余额，并从自己账户发红包。"
+    "mc_landmarks / mc_stock_leaderboard / mc_stock_quote / mc_player_ip / mc_ip_locate 只读、已激活即可。"
     "已绑定游戏角色的 QQ 用户可在求助时使用 tp / effect / spawnpoint 等自救指令，且仅限本人绑定角色；"
     "未绑定用户无权执行改世界类指令，需先 /mc 绑定 <玩家名>。"
-    "管理员帮别人绑定/解绑 QQ 与游戏角色时，必须调用 mc_qq_binding"
+    "帮别人绑定/解绑 QQ 与游戏角色时，必须调用 mc_qq_binding"
     "（sub_action=bind/unbind/query），不要让用户自己猜指令；force=true 可强制改绑。"
     "qq 可为数字 QQ 或 member_openid；消息里已 @对方时 qq 留空即可，不要传群名片。"
     "effect 只能用于药水效果。劈闪电必须用 execute at 玩家名 run summon lightning_bolt ~ ~ ~。"
@@ -137,8 +138,25 @@ class EndstoneArcMessageCenter(Star):
         self._activation_store: ActivationStore | None = None
         self._admin_store: AdminStore | None = None
         self._group_umo: dict[str, str] = {}
-        self._platform_id: str = str(self.config.get("platform_id") or "")
+        self._platform_id: str = self._normalize_platform_id(
+            self.config.get("platform_id")
+        )
         self._start_task: asyncio.Task | None = None
+
+    @staticmethod
+    def _normalize_platform_id(value: object) -> str:
+        """Treat empty / ``default`` as unset so the plugin auto-learns.
+
+        Args:
+            value: Raw config value.
+
+        Returns:
+            Concrete platform id, or empty string for auto-learn.
+        """
+        text = str(value or "").strip()
+        if not text or text.lower() == "default":
+            return ""
+        return text
 
     async def initialize(self):
         """Start Hub after plugin load."""
@@ -179,6 +197,41 @@ class EndstoneArcMessageCenter(Star):
             if text:
                 ids.add(text)
         return ids
+
+    def _is_group_allowed(self, group_id: str | None) -> bool:
+        """Whether ``group_id`` is allowed by the configured whitelist.
+
+        Empty ``target_groups`` means no restriction (legacy behavior).
+
+        Args:
+            group_id: Platform group id or QQ official group openid.
+
+        Returns:
+            True when interaction / forward / broadcast is allowed.
+        """
+        gid = str(group_id or "").strip()
+        if not gid:
+            return False
+        targets = self._target_group_ids()
+        if not targets:
+            return True
+        return gid in targets
+
+    def _session_id_from_umo(self, umo: str) -> str:
+        """Extract session/group id from a unified message origin.
+
+        Args:
+            umo: ``platform:MessageType:session_id`` string.
+
+        Returns:
+            Trailing session id segment, or the original string when malformed.
+        """
+        text = str(umo or "").strip()
+        if not text:
+            return ""
+        if ":" not in text:
+            return text
+        return text.rsplit(":", 1)[-1].strip()
 
     def _group_names(self) -> dict[str, str]:
         raw = self.config.get("group_names") or {}
@@ -308,6 +361,9 @@ class EndstoneArcMessageCenter(Star):
         store = self._activation_store
         if store is None:
             return False
+        gid = str(event.get_group_id() or event.get_session_id() or "").strip()
+        if event.get_group_id() and not self._is_group_allowed(gid):
+            return False
         umo = str(event.unified_msg_origin or "").strip()
         if umo and store.is_activated(umo):
             return True
@@ -340,6 +396,14 @@ class EndstoneArcMessageCenter(Star):
                 event,
                 f"[{self.config.get('hub_server_name') or _HUB_DISPLAY}]\n"
                 "❌ 无法识别当前会话，请稍后再试。",
+            )
+            return
+        if not self._is_group_allowed(session_id):
+            await self._reply_to_event(
+                event,
+                f"[{self.config.get('hub_server_name') or _HUB_DISPLAY}]\n"
+                "❌ 当前群不在白名单 target_groups 中，无法激活。\n"
+                f"当前群 ID: {session_id or '(空)'}",
             )
             return
 
@@ -1026,7 +1090,19 @@ class EndstoneArcMessageCenter(Star):
                     f"[{_HUB_DISPLAY}] 发送失败（未找到平台）: {label or umo}"
                 )
         except Exception as error:
+            err_text = str(error)
             logger.error(f"[{_HUB_DISPLAY}] 发送到 {label or umo} 异常: {error}")
+            # QQ Official: group openid expired / bot left group / group recreated.
+            if any(
+                token in err_text
+                for token in ("群已注销", "11255", "40011028", "请求的资源不存在")
+            ):
+                store = self._activation_store
+                if store is not None and store.deactivate(umo):
+                    logger.warning(
+                        f"[{_HUB_DISPLAY}] 已移除失效激活会话 {umo}；"
+                        "请在当前群重新发送 /mc activate"
+                    )
 
     def _resolve_session_umo(self, target: str) -> str | None:
         key = str(target or "").strip()
@@ -1047,6 +1123,29 @@ class EndstoneArcMessageCenter(Star):
         return None
 
     async def _broadcast_to_activated_sessions(self, text: str) -> None:
+        """Broadcast MC→QQ text to whitelist groups (preferred) or activated sessions.
+
+        When ``target_groups`` is set, only those group ids receive the message.
+        Activated sessions outside the whitelist are skipped.
+        """
+        targets = self._target_group_ids()
+        seen: set[str] = set()
+
+        if targets:
+            for gid in targets:
+                umo = self._resolve_umo(gid)
+                if not umo or umo in seen:
+                    continue
+                seen.add(umo)
+                await self._send_message_to_umo(umo, text, label=str(gid))
+            if seen:
+                return
+            logger.debug(
+                f"[{_HUB_DISPLAY}] 白名单群尚无 unified_msg_origin，"
+                "请先在白名单群内发一条消息或 /mc activate"
+            )
+            return
+
         store = self._activation_store
         if store is None:
             return
@@ -1054,13 +1153,15 @@ class EndstoneArcMessageCenter(Star):
         if not sessions:
             logger.debug(f"[{_HUB_DISPLAY}] 无已激活会话，跳过广播")
             return
-        seen: set[str] = set()
         for item in sessions:
             umo = str(item.get("session_key") or "").strip()
             if not umo or umo in seen:
                 continue
+            sid = str(item.get("session_id") or self._session_id_from_umo(umo)).strip()
+            if not self._is_group_allowed(sid):
+                continue
             seen.add(umo)
-            label = str(item.get("label") or item.get("session_id") or umo)
+            label = str(item.get("label") or sid or umo)
             await self._send_message_to_umo(umo, text, label=label)
 
     async def _reply_to_session(self, target: str, text: str) -> None:
@@ -1104,11 +1205,44 @@ class EndstoneArcMessageCenter(Star):
         if not umo:
             return
         if not self._platform_id:
-            self._platform_id = event.get_platform_id()
+            learned = str(event.get_platform_id() or "").strip()
+            if learned and learned.lower() != "default":
+                self._platform_id = learned
         self._group_umo[umo] = umo
         for key in (event.get_group_id(), event.get_session_id()):
             if key:
                 self._group_umo[str(key)] = umo
+        self._maybe_migrate_activation(event)
+
+    def _maybe_migrate_activation(self, event: AstrMessageEvent) -> None:
+        """Move a single per-platform activation when QQ group openid changes.
+
+        Args:
+            event: Current inbound group/private event.
+        """
+        store = self._activation_store
+        if store is None:
+            return
+        umo = str(event.unified_msg_origin or "").strip()
+        sid = str(event.get_session_id() or event.get_group_id() or "").strip()
+        platform_id = str(event.get_platform_id() or self._platform_id or "").strip()
+        if not umo or not platform_id:
+            return
+        if store.is_activated(umo) or (sid and store.is_activated_by_session_id(sid)):
+            return
+        if not self._is_group_allowed(sid):
+            return
+        old_key = store.migrate_single_platform_session(
+            platform_id,
+            umo,
+            session_id=sid,
+            label=sid or umo,
+        )
+        if old_key:
+            logger.warning(
+                f"[{_HUB_DISPLAY}] 检测到群会话 ID 变更，已迁移激活会话："
+                f"{old_key} -> {umo}"
+            )
 
     def _resolve_display_name(self, event: AstrMessageEvent) -> str:
         assert self._binding_store is not None
@@ -1186,6 +1320,10 @@ class EndstoneArcMessageCenter(Star):
         if mc_raw is None:
             return
 
+        gid = str(event.get_group_id() or event.get_session_id() or "").strip()
+        if event.get_group_id() and not self._is_group_allowed(gid):
+            return
+
         self._remember_umo(event)
 
         if is_mc_activate_command(mc_raw):
@@ -1212,7 +1350,6 @@ class EndstoneArcMessageCenter(Star):
             return
 
         display_name = self._resolve_display_name(event)
-        gid = str(event.get_group_id() or event.get_session_id() or "").strip()
         await self._hub.push_command_forward(
             raw_message=mc_raw,
             user_id=self._sender_id(event),
@@ -1225,7 +1362,7 @@ class EndstoneArcMessageCenter(Star):
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent):
-        """Forward target-group QQ messages/commands to connected MC servers."""
+        """Forward whitelist-group QQ messages/commands to connected MC servers."""
         if event.get_extra("mc_ai_event"):
             return
         if not self._hub:
@@ -1235,12 +1372,7 @@ class EndstoneArcMessageCenter(Star):
         if not gid:
             return
 
-        targets = self._target_group_ids()
-        if (
-            targets
-            and str(gid) not in targets
-            and not self._is_tool_session_activated(event)
-        ):
+        if not self._is_group_allowed(str(gid)):
             return
 
         self._remember_umo(event)
@@ -1251,13 +1383,6 @@ class EndstoneArcMessageCenter(Star):
             return
 
         display_name = self._resolve_display_name(event)
-        sender_role = "member"
-        try:
-            raw_obj = event.message_obj.raw_message if event.message_obj else None
-            if isinstance(raw_obj, dict):
-                sender_role = str((raw_obj.get("sender") or {}).get("role") or "member")
-        except Exception:
-            pass
 
         if raw.startswith("/"):
             return
@@ -1306,6 +1431,45 @@ class EndstoneArcMessageCenter(Star):
         lines.append(f"管理员: {len(admins)}")
         yield event.plain_result("\n".join(lines))
 
+    def _qq_tool_permission_status_text(self, event: AstrMessageEvent) -> str:
+        """Describe the current QQ caller's MC tool permission for the LLM.
+
+        Args:
+            event: Current AstrBot event (external / QQ side).
+
+        Returns:
+            One short paragraph the model can trust without calling identity tools.
+        """
+        uid = self._sender_id(event)
+        level = self._resolve_tool_permission_level(event)
+        if self._is_super_admin(event):
+            title = "代理服主（插件超级管理员）"
+            can_admin = True
+        elif self._id_in_set(uid, self._admin_ids()):
+            title = "管理员（插件管理员列表）"
+            can_admin = True
+        elif self._qq_can_run_command(event):
+            role = self._qq_sender_role(event)
+            title = f"管理员（QQ 群身份 {role or 'owner/admin'}）"
+            can_admin = True
+        elif self._qq_bound_player_name(event):
+            bound = self._qq_bound_player_name(event)
+            title = f"助手（已绑定角色 {bound}，仅自救/查自己）"
+            can_admin = False
+        else:
+            title = "普通（只读工具；改世界需先 /mc 绑定或由管理员操作）"
+            can_admin = False
+        admin_note = (
+            "可直接调用入狱/天眼/改银行/领地/弧光传送/mc_run_command 等管理类工具。"
+            if can_admin
+            else "管理类工具若被调用会由后端拒绝；不要先查群管身份再决定是否调用。"
+        )
+        return (
+            f"当前消息发起者 ID={uid or '未知'}；Minecraft 工具权限={title}"
+            f"（permission_level={level}）。{admin_note}"
+            "QQ 群名片/群身份元数据不能替代本条权限判定。"
+        )
+
     @filter.on_llm_request()
     async def on_llm_request(
         self, event: AstrMessageEvent, req: ProviderRequest
@@ -1319,7 +1483,7 @@ class EndstoneArcMessageCenter(Star):
                 if text:
                     parts.append(text)
         elif self._is_external_mc_tool_session(event):
-            parts = [_QQ_MC_TOOL_HINT]
+            parts = [_QQ_MC_TOOL_HINT, self._qq_tool_permission_status_text(event)]
             listing = self._format_ai_helper_listing()
             if listing:
                 parts.append("已连接的 Minecraft 服务器：\n" + listing)
@@ -1738,12 +1902,36 @@ class EndstoneArcMessageCenter(Star):
 
     @filter.llm_tool(name="mc_server_info")
     async def mc_server_info(self, event: AstrMessageEvent, server: str = "") -> str:
-        """查询指定 Minecraft 服务器基本信息（名称、版本、在线人数、运行时长等）。不要编造。
+        """查询 Minecraft 服务器信息（含 CPU/内存/GPU；同物理机多开会合并且只显示一次硬件）。不要编造。
 
         Args:
-            server(string): 目标服务器名称、编号或别名；游戏内可留空；QQ 多开服必须填
+            server(string): 目标服务器名称、编号或别名；留空则查询全部已连接子服并按物理机合并
         """
-        return await self._call_mc_ai_tool(event, "info", server=server)
+        is_mc = bool(event.get_extra("mc_ai_event"))
+        if not self._hub:
+            return "弧光消息中枢尚未启动。"
+        if not is_mc and not self._is_tool_session_activated(event):
+            return (
+                "该会话尚未激活 Minecraft 工具。"
+                "请让插件管理员在本对话发送 /mc activate。"
+            )
+
+        hint = str(server or "").strip()
+        if is_mc and not hint:
+            origin = str(event.get_extra("mc_ai_server") or "").strip()
+            names = [origin] if origin else None
+            if names:
+                return await self._hub.collect_and_format_server_info(
+                    server_names=names
+                )
+
+        names, error = self._hub.resolve_info_server_names(
+            server_hint=hint,
+            aliases=self._server_aliases(),
+        )
+        if error:
+            return error
+        return await self._hub.collect_and_format_server_info(server_names=names)
 
     @filter.llm_tool(name="mc_run_command")
     async def mc_run_command(

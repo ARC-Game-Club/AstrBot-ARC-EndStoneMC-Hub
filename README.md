@@ -1,10 +1,10 @@
 # 弧光 EndStone 消息中枢
-[![Codacy Grade](https://app.codacy.com/project/badge/Grade/ac1ce35120504313aee1c2fd0cda7277)](https://app.codacy.com/gh/ARC-Minecraft/AstrBot-ARC-EndStoneMC-Hub/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
+[![Codacy Grade](https://app.codacy.com/project/badge/Grade/ac1ce35120504313aee1c2fd0cda7277)](https://app.codacy.com/gh/ARC-Game-Club/AstrBot-ARC-EndStoneMC-Hub/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
 
 
 AstrBot 插件（目录名 `astrbot_plugin_endstone_arc`）：QQ ↔ Minecraft 的 WebSocket 中枢。
 
-仓库：[ARC-Minecraft/AstrBot-ARC-EndStoneMC-Hub](https://github.com/ARC-Minecraft/AstrBot-ARC-EndStoneMC-Hub)
+仓库：[ARC-Game-Club/AstrBot-ARC-EndStoneMC-Hub](https://github.com/ARC-Game-Club/AstrBot-ARC-EndStoneMC-Hub)
 
 ## 配套依赖
 
@@ -12,9 +12,9 @@ AstrBot 插件（目录名 `astrbot_plugin_endstone_arc`）：QQ ↔ Minecraft �
 
 | 组件 | 仓库 |
 |------|------|
-| **本仓库（AstrBot 中枢）** | [AstrBot-ARC-EndStoneMC-Hub](https://github.com/ARC-Minecraft/AstrBot-ARC-EndStoneMC-Hub) |
-| **MC 子服 QQ 互通** | [EndstoneMC-ARC-QQ-Sync-Plugin](https://github.com/ARC-Minecraft/EndstoneMC-ARC-QQ-Sync-Plugin) |
-| **MC 子服 AI 助手（可选）** | [EndstoneMC-ARC-AI-Helper](https://github.com/ARC-Minecraft/EndstoneMC-ARC-AI-Helper) |
+| **本仓库（AstrBot 中枢）** | [AstrBot-ARC-EndStoneMC-Hub](https://github.com/ARC-Game-Club/AstrBot-ARC-EndStoneMC-Hub) |
+| **MC 子服 QQ 互通** | [EndstoneMC-ARC-QQ-Sync-Plugin](https://github.com/ARC-Game-Club/EndstoneMC-ARC-QQ-Sync-Plugin) |
+| **MC 子服 AI 助手（可选）** | [EndstoneMC-ARC-AI-Helper](https://github.com/ARC-Game-Club/EndstoneMC-ARC-AI-Helper) |
 
 ```
 QQ / 其他平台
@@ -32,7 +32,7 @@ EndstoneMC-ARC-QQ-Sync-Plugin（各 MC 子服）
 - 群指令统一要求 `/mc` 前缀（如 `/mc help`、`/mc cmd stop`），剥前缀后再下发子服
 - QQ 绑定数据权威存储（`data.json` / data_rpc）
 - 可选同步群名片（`sync_group_card`）
-- **MC AI 对话 RPC**（`ai_chat`）：[AI Helper](https://github.com/ARC-Minecraft/EndstoneMC-ARC-AI-Helper) 将玩家消息送入 AstrBot 正式对话管线，人格 / 记忆由 AstrBot 维护。身份映射：已绑定则发送者 ID = **QQ 号**，未绑定则用 **XUID**；不传群号。弧光天星回复同样走弧光护卫关键词检测：命中则拦截原文，并对触发者施加与玩家自己说违禁词相同的处罚。服务角色 `ai_helper` 不占用子服编号、也不会播报开停服
+- **MC AI 对话 RPC**（`ai_chat`）：[AI Helper](https://github.com/ARC-Game-Club/EndstoneMC-ARC-AI-Helper) 将玩家消息送入 AstrBot 正式对话管线，人格 / 记忆由 AstrBot 维护。身份映射：已绑定则发送者 ID = **QQ 号**，未绑定则用 **XUID**；不传群号。弧光天星回复同样走弧光护卫关键词检测：命中则拦截原文，并对触发者施加与玩家自己说违禁词相同的处罚。服务角色 `ai_helper` 不占用子服编号、也不会播报开停服
 - **MC AI 服务器工具**（`ai_tool`）：给大模型提供 `mc_list_servers` / `mc_list_players` / `mc_get_tps` / `mc_server_info` / `mc_run_command` / `mc_landmarks` / `mc_economy` / `mc_land` / `mc_arc_tp` / `mc_jail_player` / `mc_release_player` / `mc_list_prisoners` / `mc_skyeye_player` / `mc_skyeye_combat` / `mc_skyeye_location` / `mc_stock_leaderboard` / `mc_stock_quote` / `mc_player_ip`。游戏内打在消息来源服；外部对话需插件管理员先发 **`/mc activate`** 激活本会话（会话 ID 可为非数字字符串）。多开服通过 `server` 指定；**天眼查询 `server` 可留空，会搜索全部已连接服务器**（玩家不必在线）。工具会把三档 `permission_level`（助手 / 管理员 / 代理服主）回传给 AI Helper。能识别 QQ 群身份时，入狱 / 天眼 / 银行 / 领地 / 弧光传送 / 任意改世界指令仅管理员；**`mc_landmarks` / `mc_stock_leaderboard` / `mc_stock_quote` / `mc_player_ip` 只读、已激活即可**；**已绑定 QQ 用户**可在求助时对**本人绑定角色**使用 tp / effect / spawnpoint 等自救指令；**未绑定**用户无权执行改世界类工具。
 
 ## 安装
@@ -59,7 +59,7 @@ AstrBot/data/plugins/astrbot_plugin_endstone_arc/
 | `ai_chat_timeout` | MC AI 助手走 AstrBot 对话的超时秒数，默认 180 |
 | `server_aliases` | QQ 里称呼到正式 `server_name` 的映射，例如 `主服` → `弧光冒险模拟生活服务器` |
 
-MC 子服侧（[QQ Sync](https://github.com/ARC-Minecraft/EndstoneMC-ARC-QQ-Sync-Plugin)）只需：`hub_host` / `hub_port` / `hub_token`（及可选互不相同的 `server_name`）。
+MC 子服侧（[QQ Sync](https://github.com/ARC-Game-Club/EndstoneMC-ARC-QQ-Sync-Plugin)）只需：`hub_host` / `hub_port` / `hub_token`（及可选互不相同的 `server_name`）。
 
 AI Helper 使用独立连接：`register.role = "ai_helper"`，不会占用子服编号，也不会播报开停服。欢迎包含 `ai_chat: true` 与 `features: ["ai_chat", "ai_tools"]`。需要先升级本中枢，再启用 AI Helper 的 AstrBot 对话。
 

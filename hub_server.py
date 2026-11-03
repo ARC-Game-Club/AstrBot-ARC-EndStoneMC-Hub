@@ -17,6 +17,9 @@ from astrbot.api import logger
 from .binding_store import BindingStore
 
 HUB_MAX_NUMERIC_SERVER_ID = 9999
+# Wait for all targeted servers' command_result before merging into one QQ
+# message; flushes with partial results after this timeout.
+COMMAND_RESULT_TIMEOUT = 10.0
 _mc_format_code_pattern = re.compile("\u00a7.")
 
 # QQ 群内由弧光 EndStone 消息中枢识别的指令（群内须 /mc 前缀）
@@ -73,12 +76,19 @@ def format_merged_server_info(payloads: list[dict[str, Any]]) -> str:
     groups: dict[str, list[dict[str, Any]]] = {}
     for item in payloads:
         system = item.get("system") if isinstance(item.get("system"), dict) else {}
-        host_id = str(system.get("host_id") or "").strip() or f"solo:{item.get('server_name')}"
+        host_id = (
+            str(system.get("host_id") or "").strip()
+            or f"solo:{item.get('server_name')}"
+        )
         groups.setdefault(host_id, []).append(item)
 
     lines: list[str] = ["ℹ️ 服务器信息"]
     for host_id, members in groups.items():
-        system = members[0].get("system") if isinstance(members[0].get("system"), dict) else {}
+        system = (
+            members[0].get("system")
+            if isinstance(members[0].get("system"), dict)
+            else {}
+        )
         names = [str(m.get("server_name") or "?") for m in members]
         hostname = str(system.get("hostname") or host_id)
         lines.append("")
@@ -352,6 +362,8 @@ class ArcHubServer:
         self.ai_chat_timeout = 180.0
         self._pending_ai_tool: dict[str, tuple[ServerConnection, asyncio.Future]] = {}
         self._pending_core_rpc: dict[str, tuple[ServerConnection, asyncio.Future]] = {}
+        # request_id -> aggregation state for merged command_forward replies.
+        self._pending_command_replies: dict[str, dict[str, Any]] = {}
 
     def _ensure_server_numeric_id(self, server_name: str) -> int:
         if server_name not in self._server_numeric_id_by_name:
@@ -384,6 +396,11 @@ class ArcHubServer:
         """Stop Hub and close all MC connections."""
         self._fail_pending_ai_tools("弧光消息中枢已停止")
         self._fail_pending_core_rpcs("弧光消息中枢已停止")
+        for pending in self._pending_command_replies.values():
+            timer = pending.get("timer")
+            if timer:
+                timer.cancel()
+        self._pending_command_replies.clear()
         self._running = False
         for ws in list(self.connected_servers.values()):
             try:
@@ -523,9 +540,7 @@ class ArcHubServer:
             if was_service:
                 self._fail_pending_ai_tools("AI Helper 连接已断开", websocket)
             if server_name and not was_service:
-                self._fail_pending_core_rpcs(
-                    f"子服 [{server_name}] 已断开", websocket
-                )
+                self._fail_pending_core_rpcs(f"子服 [{server_name}] 已断开", websocket)
                 self.connected_servers.pop(server_name, None)
                 # Hub WS drop is authoritative (force-killed MC may never send server_stop).
                 await self._broadcast_to_others(
@@ -551,6 +566,8 @@ class ArcHubServer:
             text = data.get("text", "")
             if text:
                 await self.broadcast_qq(strip_minecraft_format_codes(str(text)))
+        elif msg_type == "command_result":
+            await self._handle_command_result(server_name, data)
         elif msg_type == "ping":
             await ws.send(json.dumps({"type": "pong"}))
         elif msg_type == "data_rpc":
@@ -777,17 +794,23 @@ class ArcHubServer:
         request_id = str(uuid.uuid4())
         fut = asyncio.get_running_loop().create_future()
         self._pending_ai_tool[request_id] = (ws, fut)
-        await ws.send(
-            json.dumps(
-                {
-                    "type": "ai_tool",
-                    "request_id": request_id,
-                    "action": str(action),
-                    "args": args or {},
-                },
-                ensure_ascii=False,
-            )
-        )
+        # Keep hub-authenticated identity on the message root. Helper ignores
+        # permission_level / is_op inside args (model-forgeable) and only trusts
+        # these top-level fields from the hub WebSocket.
+        payload_args = dict(args or {})
+        hub_level = payload_args.pop("permission_level", None)
+        hub_is_op = payload_args.pop("is_op", None)
+        message: dict[str, Any] = {
+            "type": "ai_tool",
+            "request_id": request_id,
+            "action": str(action),
+            "args": payload_args,
+        }
+        if hub_level not in (None, ""):
+            message["permission_level"] = hub_level
+        if hub_is_op is not None:
+            message["is_op"] = bool(hub_is_op)
+        await ws.send(json.dumps(message, ensure_ascii=False))
         try:
             resp = await asyncio.wait_for(fut, timeout=max(5.0, float(timeout)))
         except asyncio.TimeoutError as e:
@@ -824,7 +847,9 @@ class ArcHubServer:
                 last_error = "core_rpc 返回格式异常"
                 continue
             if resp.get("ok"):
-                result = resp.get("result") if isinstance(resp.get("result"), dict) else resp
+                result = (
+                    resp.get("result") if isinstance(resp.get("result"), dict) else resp
+                )
                 name = str(result.get("player_name") or player_name).strip()
                 xuid = str(result.get("xuid") or "").strip()
                 if name and xuid:
@@ -1251,13 +1276,15 @@ class ArcHubServer:
                 "/mc tps [编号] — TPS / MSPT",
                 "/mc info [编号] — 服务器信息（CPU/内存/GPU，同物理机合并）",
                 "/mc 绑定 <玩家名> — 绑定 QQ 到游戏角色",
+                "/mc unbindqq <玩家名|QQ|openid> — 插件管理员解除绑定",
                 "/mc 重启 — 重启投票（须在线）",
                 "/mc cmd [编号] <控制台命令> — 群管理可用",
                 "/mc who <玩家名|QQ> [编号] — 插件管理员",
-                "/mc ban|unban|banlist|unbindqq|reload — 插件管理员",
+                "/mc ban|unban|banlist|reload — 插件管理员",
                 "/mc activate — 插件管理员在本会话激活 Minecraft AI 工具",
                 "",
                 "说明：中枢会剥掉 /mc 后再发给各 MC 子服；省略编号则所有子服执行。",
+                "绑定 / unbindqq 由中枢本地处理，不依赖子服在线。",
                 "AI 工具需先 /mc activate；会话 ID 可为非数字字符串。",
             ]
         )
@@ -1356,6 +1383,14 @@ class ArcHubServer:
                 reply_target, user_id, forward_message.strip().split()[1:]
             )
             return
+        if bind_head.lower() == "unbindqq":
+            await self._handle_qq_unbind(
+                reply_target,
+                user_id,
+                display_name,
+                forward_message.strip().split()[1:],
+            )
+            return
 
         eff_line, route_sid = parse_hub_command_routing(forward_message)
         if route_sid is not None:
@@ -1390,12 +1425,35 @@ class ArcHubServer:
         is_admin = uid in self.hub_admins or (
             bool(uid) and any(item.lower() == uid.lower() for item in self.hub_admins)
         )
+        # Register aggregation so replies from all targeted servers merge into
+        # one QQ message (requires QQ Sync >= 1.0.8 command_result).
+        request_id = uuid.uuid4().hex
+        if route_sid is not None:
+            forward_targets = [
+                str(item["name"])
+                for item in self.get_server_catalog()
+                if int(item["id"]) == route_sid
+                and str(item["name"]) in self.connected_servers
+            ]
+        else:
+            forward_targets = list(self.connected_servers.keys())
+        if forward_targets:
+            self._pending_command_replies[request_id] = {
+                "targets": forward_targets,
+                "responded": set(),
+                "replies": {},
+                "reply_target": reply_target,
+                "timer": asyncio.create_task(
+                    self._expire_command_replies(request_id, COMMAND_RESULT_TIMEOUT)
+                ),
+            }
         await self.broadcast_to_all(
             {
                 "type": "command_forward",
                 "raw_message": forward_message,
                 "command_line": eff_line,
                 "target_server_id": route_sid,
+                "request_id": request_id,
                 "user_id": user_id,
                 "display_name": display_name,
                 "group_id": group_id,
@@ -1403,6 +1461,72 @@ class ArcHubServer:
                 "is_config_admin": is_admin,
             }
         )
+
+    async def _expire_command_replies(self, request_id: str, delay: float) -> None:
+        """Flush aggregated command replies after the timeout, partial or not.
+
+        Args:
+            request_id: Pending aggregation to flush.
+            delay: Seconds to wait for remaining servers.
+        """
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        await self._flush_command_replies(request_id)
+
+    async def _handle_command_result(self, server_name: str, data: dict) -> None:
+        """Collect one server's command_result and merge when all have replied.
+
+        Args:
+            server_name: Server that executed the forwarded command.
+            data: Payload with ``request_id`` and ``replies`` text list.
+        """
+        rid = str(data.get("request_id") or "")
+        pending = self._pending_command_replies.get(rid)
+        if pending is None or server_name not in pending["targets"]:
+            return
+        raw_replies = data.get("replies")
+        if isinstance(raw_replies, list):
+            cleaned = [
+                strip_minecraft_format_codes(str(text))
+                for text in raw_replies
+                if str(text or "").strip()
+            ]
+            if cleaned:
+                pending["replies"].setdefault(server_name, []).extend(cleaned)
+        pending["responded"].add(server_name)
+        if pending["responded"] >= set(pending["targets"]):
+            await self._flush_command_replies(rid)
+
+    async def _flush_command_replies(self, request_id: str) -> None:
+        """Send all collected command replies as a single QQ message.
+
+        Args:
+            request_id: Pending aggregation to flush.
+        """
+        pending = self._pending_command_replies.pop(request_id, None)
+        if pending is None:
+            return
+        timer = pending.get("timer")
+        # Cancel only from another task; a self-cancel would raise
+        # CancelledError at the next await and drop the merged reply.
+        if timer and timer is not asyncio.current_task():
+            timer.cancel()
+        sections: list[str] = []
+        for name in pending["targets"]:
+            replies = pending["replies"].get(name)
+            if not replies:
+                continue
+            body = "\n".join(replies)
+            # QQ Sync replies already carry a "[server]" line; only label
+            # sections whose text lacks it.
+            if len(pending["targets"]) > 1 and not body.startswith(f"[{name}]"):
+                body = f"[{name}]\n{body}"
+            sections.append(body)
+        if not sections:
+            return
+        await self.reply_qq(pending["reply_target"], "\n\n".join(sections))
 
     def resolve_info_server_names(
         self,
@@ -1504,15 +1628,25 @@ class ArcHubServer:
             except Exception as exc:
                 return name, None, str(exc)
             if not isinstance(resp, dict) or not resp.get("ok"):
-                return name, None, str(
-                    (resp or {}).get("error") if isinstance(resp, dict) else "返回异常"
+                return (
+                    name,
+                    None,
+                    str(
+                        (resp or {}).get("error")
+                        if isinstance(resp, dict)
+                        else "返回异常"
+                    ),
                 )
             result = resp.get("result")
             if not isinstance(result, dict) or not result.get("ok"):
-                return name, None, str(
-                    (result or {}).get("error")
-                    if isinstance(result, dict)
-                    else "无有效数据"
+                return (
+                    name,
+                    None,
+                    str(
+                        (result or {}).get("error")
+                        if isinstance(result, dict)
+                        else "无有效数据"
+                    ),
                 )
             return name, result, ""
 
@@ -1528,14 +1662,100 @@ class ArcHubServer:
         if not payloads:
             detail = "\n".join(errors) if errors else "（无返回）"
             return (
-                "未能获取服务器信息（需 QQ Sync ≥ 1.0.6 的 server_info）。\n"
-                + detail
+                "未能获取服务器信息（需 QQ Sync ≥ 1.0.6 的 server_info）。\n" + detail
             )
 
         text = format_merged_server_info(payloads)
         if errors:
             text += "\n\n部分子服失败：\n" + "\n".join(errors)
         return text
+
+    async def _handle_qq_unbind(
+        self,
+        reply_target: str,
+        user_id: str | int,
+        display_name: str,
+        args: list[str],
+    ) -> None:
+        """Clear a QQ/openid ↔ player binding on the hub (no MC round-trip).
+
+        Args:
+            reply_target: Session / group id for ``reply_qq``.
+            user_id: Command sender platform id.
+            display_name: Sender display label stored as ``unbind_by``.
+            args: Tokens after ``unbindqq``; expect one player name / QQ / openid.
+        """
+        prefix = f"[{self.hub_server_name}]"
+        uid = str(user_id or "").strip()
+        is_admin = uid in self.hub_admins or (
+            bool(uid) and any(item.lower() == uid.lower() for item in self.hub_admins)
+        )
+        if not is_admin:
+            await self.reply_qq(
+                reply_target,
+                f"{prefix}\n❌ 仅插件管理员可使用 /mc unbindqq。",
+            )
+            return
+        if len(args) != 1 or not str(args[0]).strip():
+            await self.reply_qq(
+                reply_target,
+                f"{prefix}\n❌ 命令格式错误\n"
+                "💡 正确用法：/mc unbindqq <游戏内玩家名|QQ|openid>\n"
+                "💡 例如：/mc unbindqq DEVILENMO",
+            )
+            return
+
+        search = str(args[0]).strip()
+        store = self.binding_store
+        admin_label = str(display_name or uid or "admin").strip() or "admin"
+
+        canonical = ""
+        data: dict[str, Any] = {}
+        # Prefer player-name match; fall back to current/history QQ/openid.
+        canonical, data = store.find_player_entry(search)
+        if not data:
+            by_qq = str(store.get_qq_player(search) or "").strip()
+            if by_qq:
+                canonical, data = store.find_player_entry(by_qq)
+        if not data:
+            # Historical bind lookup (same as QQ Sync who/unban path).
+            for name, row in store.binding_data.items():
+                if not isinstance(row, dict):
+                    continue
+                for key in ("qq", "previous_qq", "original_qq"):
+                    if str(row.get(key) or "").strip() == search:
+                        canonical, data = str(name), row
+                        break
+                if data:
+                    break
+
+        if not data:
+            await self.reply_qq(
+                reply_target,
+                f"{prefix}\n❌ 未找到「{search}」对应的绑定记录",
+            )
+            return
+
+        bound = str(data.get("qq") or "").strip()
+        if not bound:
+            await self.reply_qq(
+                reply_target,
+                f"{prefix}\n❌ 玩家「{canonical}」当前未绑定平台用户",
+            )
+            return
+
+        if not store.unbind_player_qq(canonical, admin_name=admin_label):
+            await self.reply_qq(
+                reply_target,
+                f"{prefix}\n❌ 解绑失败，请稍后重试",
+            )
+            return
+
+        await self.reply_qq(
+            reply_target,
+            f"{prefix}\n✅ 已解除「{canonical}」与平台用户 {bound} 的绑定"
+            f"（操作者 {admin_label}）",
+        )
 
     async def _handle_qq_bind(
         self,

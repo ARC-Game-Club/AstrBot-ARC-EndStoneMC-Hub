@@ -268,10 +268,19 @@ class BindingStore:
         return True
 
     def unbind_player_qq(self, player_name: str, admin_name: str = "system") -> bool:
-        if player_name not in self._binding_data:
+        """Clear the QQ/openid binding for a game character (case-insensitive name).
+
+        Args:
+            player_name: In-game player name (exact or case-insensitive).
+            admin_name: Operator label stored on the record.
+
+        Returns:
+            True when a bound QQ/openid was cleared.
+        """
+        canonical, data = self.find_player_entry(player_name)
+        if not canonical or not data:
             return False
-        data = self._binding_data[player_name]
-        if not data.get("qq"):
+        if not str(data.get("qq") or "").strip():
             return False
         data["original_qq"] = data.get("original_qq") or data.get("qq") or ""
         data["previous_qq"] = data.get("qq") or ""

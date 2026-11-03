@@ -128,7 +128,7 @@ AI Helper 使用独立连接：`register.role = "ai_helper"`，不会占用子�
 | | | `qq` | bind 时可选 | | 平台用户 ID：传统 QQ（5～11 位数字）或 QQ 官方 `member_openid`；已 @对方时可留空自动解析；**不要填群名片** |
 | | | `force` | bind 时可选 | | `true` 强制改绑（先解旧绑） |
 
-权限补充：QQ 群里「管理员」= 插件管理员 / 超级管理员，或能识别出的群主 / 群管（**以后端校验为准，不是 QQ 群名片**）。超级管理员映射为 AI Helper **代理服主**，普通管理员映射为 **管理员**，已绑定自救用户映射为 **助手**。外部已激活会话会在系统提示里写明当前消息发起者的 Minecraft 权限档位；模型应直接调 `mc_*` 工具，不要先查群身份。`mc_run_command` 对已绑定用户开放 tp / effect / spawnpoint 等自救，且只能打在本人绑定角色上；未绑定用户不能改世界。**已绑定用户**可调用 `mc_economy`（`sub_action=query`）查本人余额；查他人或 change 仍仅管理员。**`mc_qq_binding`** 在中枢本地处理（不经 AI Helper）；游戏内需 OP/管理员权限。游戏内对话会透传 AI Helper 发来的 `permission_level`。
+权限补充：QQ 群里「管理员」= 插件管理员 / 超级管理员，或能识别出的群主 / 群管（**以后端校验为准，不是 QQ 群名片**）。超级管理员映射为 AI Helper **代理服主**，普通管理员映射为 **管理员**，已绑定自救用户映射为 **助手**。中枢把该档位放在 `ai_tool` 消息顶层传给 Helper；Helper 仍忽略 args 内自报的 `permission_level`（防伪造）。外部已激活会话会在系统提示里写明当前消息发起者的 Minecraft 权限档位；模型应直接调 `mc_*` 工具，不要先查群身份。`mc_run_command` 对已绑定用户开放 tp / effect / spawnpoint 等自救，且只能打在本人绑定角色上；未绑定用户不能改世界。**已绑定用户**可调用 `mc_economy`（`sub_action=query`）查本人余额；查他人或 change 仍仅管理员。**`mc_qq_binding`** 与 **`/mc unbindqq`** 在中枢本地处理（不经 AI Helper）；游戏内需 OP/管理员权限。游戏内对话会透传 AI Helper 发来的 `permission_level`。
 
 ## 启停与连接提示
 
@@ -142,6 +142,9 @@ AI Helper 的 `ai_helper` 连接**不走**上述开停服播报。
 
 ## 更新日志
 
+- **1.7.15**：修复多服合并回复中服务器名显示两次——QQ Sync 回复自带 `[服名]` 行时中枢不再重复添加。
+- **1.7.14**：`/mc list`、`/mc tps`、`/mc cmd` 等群指令在多子服时改为中枢聚合成一条 QQ 消息回复（每服输出以 `[服名]` 分段），不再一服一条刷屏。需 QQ Sync ≥ 1.0.8（旧版子服仍按原样逐条回复）。
+- **1.7.13**：QQ 管理/超级管理员调用天眼等工具时，中枢把已校验的 `permission_level` 放在 `ai_tool` 顶层传给 AI Helper（args 内自报权限仍忽略）。`/mc unbindqq <玩家名|QQ|openid>` 改为中枢本地解绑，不再广播子服。需 AI Helper ≥ 2.3.13。
 - **1.7.12**：`/mc info` / `mc_server_info` 由中枢经 QQ Sync `server_info` 拉取硬件信息（CPU/内存/GPU），并按物理机指纹合并去重。需 QQ Sync ≥ 1.0.6。
 - **1.7.10**：修复 QQ 侧插件管理员被大模型当成「非群管」而不敢调管理工具：系统提示改为声明权限由工具按消息发起者 ID 自动校验，并注入当前发起者的 Minecraft 权限档位；禁止先查群身份再决定是否调用。
 - **1.7.9**：新增只读工具 `mc_player_ip`（在线玩家连接原始 IP），供模型传给下游地理/天气工具。需 AI Helper ≥ 2.1.9。

@@ -1533,6 +1533,33 @@ class EndstoneArcMessageCenter(Star):
             return "assistant"
         return "assistant"
 
+    @filter.on_using_llm_tool()
+    async def _inject_mc_tool_caller_level(
+        self,
+        event: AstrMessageEvent,
+        tool,
+        tool_args,
+    ) -> None:
+        """把对话发起人的权限档位注入 MCP mc_* 工具参数（AI-Helper 侧按此校验）。
+
+        MCP 化后 hub ai_tool 的顶层档位链不再存在，改由此钩子在 LLM 输出之后、
+        工具执行之前原地覆盖 tool_args（同一 dict 传给执行器），LLM 无法伪造。
+        档位来源：游戏内 ai_chat 事件用游戏侧档位（mc_ai extras），QQ 群用
+        身份映射（超管→代理服主/群主群管→管理员/绑定用户→助手）。
+        """
+        try:
+            name = str(getattr(tool, "name", "") or "")
+            bare = name[len("zombie_"):] if name.startswith("zombie_") else name
+            if not bare.startswith("mc_"):
+                return
+            if not isinstance(tool_args, dict):
+                return
+            level = self._resolve_tool_permission_level(event)
+            if level:
+                tool_args["_mcp_caller_level"] = str(level)
+        except Exception:
+            pass
+
     def _format_ai_helper_listing(self) -> str:
         if not self._hub:
             return ""

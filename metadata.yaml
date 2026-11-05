@@ -7,7 +7,7 @@ help: |
   3. 群内使用 /mc help、/mc list、/mc cmd …；中枢剥前缀后再转发给 QQ Sync。
   4. 确保 AstrBot 已接入 QQ 平台（如 aiocqhttp / NapCat / qq_official）。
   5. 若使用 EndstoneMC-ARC-AI-Helper，将其 hub_host/port 指向本中枢；人格与记忆由 AstrBot 维护。外部对话需管理员发 /mc activate 激活后再调 MC 工具；MC 事件广播到白名单群（有 UMO 的），/mc 指令回复只回来源会话。超级管理员可用 /mc addadmin / deladmin 任免管理员。
-version: 1.8.0
+version: 1.9.0
 author: DEVILENMO
 support_platforms:
   - aiocqhttp

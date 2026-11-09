@@ -1546,10 +1546,20 @@ class EndstoneArcMessageCenter(Star):
         工具执行之前原地覆盖 tool_args（同一 dict 传给执行器），LLM 无法伪造。
         档位来源：游戏内 ai_chat 事件用游戏侧档位（mc_ai extras），QQ 群用
         身份映射（超管→代理服主/群主群管→管理员/绑定用户→助手）。
+
+        只对 MCP 工具注入：本插件自己的本地 llm_tool（mc_list_servers /
+        mc_ip_locate / mc_qq_binding）签名里没有 _mcp_caller_level，多传一个
+        kwargs 会让 handler 抛 TypeError（Tool handler parameter mismatch）。
         """
         try:
-            name = str(getattr(tool, "name", "") or "")
-            bare = name[len("zombie_"):] if name.startswith("zombie_") else name
+            mcp_tool = getattr(tool, "mcp_tool", None)
+            if mcp_tool is None:
+                return
+            # 用 MCP 服务端暴露的原始名剥离前缀（tool.name 是给 LLM 看的净化名，
+            # 非字母数字会被替换成下划线，两者对前缀判断等价，原始名更可靠）。
+            raw_name = str(getattr(mcp_tool, "name", "") or "")
+            name = raw_name or str(getattr(tool, "name", "") or "")
+            bare = self._strip_mc_tool_prefix(name)
             if not bare.startswith("mc_"):
                 return
             if not isinstance(tool_args, dict):
@@ -1559,6 +1569,26 @@ class EndstoneArcMessageCenter(Star):
                 tool_args["_mcp_caller_level"] = str(level)
         except Exception:
             pass
+
+    @staticmethod
+    def _strip_mc_tool_prefix(name: str) -> str:
+        """剥掉 MCP 工具名前缀，返回裸工具名。
+
+        多服接入同一 AstrBot 时，ARCCore 的 MCP_TOOL_PREFIX 会给工具名加前缀
+        （如 ``gun_mc_run_command``）防撞名。此前这里硬编码只剥 ``zombie_``，
+        换别的前缀就剥不掉 → 工具名不以 ``mc_`` 开头 → 档位不注入 →
+        AI-Helper 按 proxy_owner 放行，普通 QQ 群成员拿到服主级权限。
+
+        通用规则：截到第一个「下划线 + mc_」边界，其后即裸工具名。
+        无前缀的裸名（``mc_run_command``）原样返回。
+        """
+        bare = str(name or "")
+        if bare.startswith("mc_"):
+            return bare
+        index = bare.find("_mc_")
+        if index > 0:
+            return bare[index + 1:]
+        return bare
 
     def _format_ai_helper_listing(self) -> str:
         if not self._hub:

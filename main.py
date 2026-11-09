@@ -83,14 +83,17 @@ _QQ_MC_TOOL_HINT = (
     "不要用 mc_run_command 代替这些弧光核心工具。"
     "关押玩家用 mc_jail_player，释放用 mc_release_player，查看在押用 mc_list_prisoners。"
     "查玩家位置/近期行为用 mc_skyeye_player，查打架用 mc_skyeye_combat，查坐标附近用 mc_skyeye_location。"
-    "天眼不要求玩家在线。不知道人在哪台服时，server 必须留空（会搜全部已连接服务器），不要猜服名。"
+    "天眼不要求玩家在线。不知道人在哪台服时优先按服务器名关键词选前缀工具；实在无法判断再说明并询问。"
     "调用天眼时必须自己把用户说的时长换算成分钟写入 minutes，例如一天=1440、一小时=60。"
     "查询模拟美股玩家盈亏排行用 mc_stock_leaderboard；查股价/走势用 mc_stock_quote。"
     "需要玩家连接 IP 时调用 mc_player_ip，把返回的 ip= 原样取出；"
     "查 IP 归属地/基站级精确定位必须再调用 mc_ip_locate，禁止编造位置。"
-    "改世界/查在线等其它工具在多开服时仍须填写 server。"
-    "有多台 Minecraft 服务器时，除天眼外先调用 mc_list_servers，再填写 server"
-    "（名称、编号或别名），不要猜测。"
+    "【多服选服规则（重要）】工具不带 server 参数——服务器由工具名前缀区分："
+    "无前缀=弧光生活主服、zombie_=末世丧尸服、gun_=枪械战争服、anarchy_=无规则生存服、creator_=创世神创造服。"
+    "用户提到哪台服（如「无规则服雷击」「枪战服看看在线」），就必须选对应前缀的工具"
+    "（anarchy_mc_run_command / gun_mc_list_players 等），禁止用无前缀工具代替，禁止落错服。"
+    "不确定前缀对应关系时，按服务器名关键词匹配：无规则→anarchy、枪战/枪械→gun、"
+    "创造→creator、丧尸/末世→zombie、生活/主服→无前缀；各工具描述里也标了所属服务器。"
     "mc_landmarks / mc_stock_leaderboard / mc_stock_quote / mc_player_ip / mc_ip_locate 只读、已激活即可。"
     "已绑定游戏角色的 QQ 用户可在求助时使用 tp / effect / spawnpoint 等自救指令，且仅限本人绑定角色；"
     "未绑定用户无权执行改世界类指令，需先 /mc 绑定 <玩家名>。"
@@ -1468,6 +1471,9 @@ class EndstoneArcMessageCenter(Star):
                     parts.append(text)
         elif self._is_external_mc_tool_session(event):
             parts = [_QQ_MC_TOOL_HINT, self._qq_tool_permission_status_text(event)]
+            prefix_map = self._mcp_prefix_summary()
+            if prefix_map:
+                parts.append(prefix_map)
             listing = self._format_ai_helper_listing()
             if listing:
                 parts.append("已连接的 Minecraft 服务器：\n" + listing)
@@ -1590,6 +1596,35 @@ class EndstoneArcMessageCenter(Star):
             return bare[index + 1:]
         return bare
 
+    def _mcp_prefix_summary(self) -> str:
+        """从 LLM 工具管理器实时收集「MCP 服务器 ↔ 工具前缀」对照，供 LLM 选服。
+
+        数据源是已连接 MCP 工具的真名（前缀即服务器身份），零配置；拿不到时返回空。
+        """
+        try:
+            from astrbot.core.agent.mcp_client import MCPTool
+
+            manager = self.context.get_llm_tool_manager()
+            prefixes: dict[str, str] = {}
+            for tool in manager.func_list:
+                if not isinstance(tool, MCPTool):
+                    continue
+                entry = str(getattr(tool, "mcp_server_name", "") or "")
+                name = str(getattr(tool, "name", "") or "")
+                if not entry or not name or not name.startswith("mc_"):
+                    continue
+                # 前缀 = 工具名去掉首个 "_mc_" 及之后的部分（gun_mc_x → gun_）
+                marker = name.find("_mc_")
+                prefix = name[: marker + 1] if marker > 0 else "（无前缀）"
+                # 同一 MCP 服的多个工具应共享前缀；冲突时保留首个
+                prefixes.setdefault(entry, prefix)
+            if not prefixes:
+                return ""
+            lines = [f"  {prefix} → {entry}" for entry, prefix in sorted(prefixes.items())]
+            return "MCP 工具前缀 → 服务器对照（选错前缀=操作落错服）：\n" + "\n".join(lines)
+        except Exception:
+            return ""
+
     def _format_ai_helper_listing(self) -> str:
         if not self._hub:
             return ""
@@ -1611,7 +1646,7 @@ class EndstoneArcMessageCenter(Star):
 
     @filter.llm_tool(name="mc_list_servers")
     async def mc_list_servers(self, event: AstrMessageEvent) -> str:
-        """列出当前已连接、可执行工具的 Minecraft 服务器名称与编号。多开服时先调用再填写其它工具的 server。"""
+        """列出当前已连接的 Minecraft 服务器及其 mc_* 工具名前缀。多台服时按前缀选工具（服务器由工具名前缀区分，工具无 server 参数）。"""
         if not self._hub:
             return "弧光消息中枢尚未启动。"
         if not event.get_extra("mc_ai_event") and not self._is_tool_session_activated(
@@ -1624,7 +1659,11 @@ class EndstoneArcMessageCenter(Star):
         listing = self._format_ai_helper_listing()
         if not listing:
             return "当前没有 Minecraft AI Helper 在线。"
-        return "已连接的 Minecraft 服务器：\n" + listing
+        parts = ["已连接的 Minecraft 服务器：\n" + listing]
+        prefix_map = self._mcp_prefix_summary()
+        if prefix_map:
+            parts.append(prefix_map)
+        return "\n\n".join(parts)
 
     @filter.llm_tool(name="mc_ip_locate")
     async def mc_ip_locate(self, event: AstrMessageEvent, ip: str) -> str:
